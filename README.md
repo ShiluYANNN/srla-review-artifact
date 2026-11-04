@@ -8,7 +8,7 @@ Install `requirements.txt` with a PyTorch build compatible with your CUDA enviro
 python src/evaluate.py --model /path/to/checkpoint --condition srla --format chat --device cuda:0 --seed 42 --output runs/eval
 ```
 
-Use `--condition base` for the paired baseline, or `--format raw` for models without a chat template.
+Use `--condition base` for the paired baseline, or `--format raw` for models without a chat template. Increase `--batch-size` if GPU memory permits.
 
 `configs/evaluation.json` specifies random sampling, temperature 1.0, top-p 1.0, top-k disabled, a 4096-token budget and three generations per prompt (996 total). No repetition penalty is applied.
 

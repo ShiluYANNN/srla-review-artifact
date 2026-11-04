@@ -89,6 +89,70 @@ def generate(model, tokenizer, text, config, seed, style, device):
             'metrics': summarize(ids, steps, config['max_new_tokens'], stopped)}
 
 
+
+def generate_batch(model, tokenizer, jobs, config, style, device):
+    """Left-padded inference with an independent sampling RNG for each generation."""
+    import torch
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = 'left'
+    texts = [render(tokenizer, job['text'], style) for job in jobs]
+    encoded = tokenizer(texts, padding=True, return_tensors='pt', add_special_tokens=False).to(device)
+    mask = encoded.attention_mask
+    if (mask.sum(-1) == 0).any():
+        raise ValueError('Empty tokenized prompt')
+    eos = set()
+    for source in (model.generation_config.eos_token_id, tokenizer.eos_token_id):
+        if isinstance(source, int): eos.add(source)
+        elif source: eos.update(source)
+    for marker in ('<|im_end|>', '<|eot_id|>'):
+        token = tokenizer.convert_tokens_to_ids(marker)
+        if isinstance(token, int) and tokenizer.convert_ids_to_tokens(token) == marker:
+            eos.add(token)
+    query = tokenizer.eos_token_id
+    if not eos or not isinstance(query, int):
+        raise ValueError('EOS configuration is required')
+    generators = [torch.Generator(device=device).manual_seed(j['seed']) for j in jobs]
+    ids = [[] for _ in jobs]
+    steps = [[] for _ in jobs]
+    stopped = [False] * len(jobs)
+    positions = (mask.cumsum(-1)-1).clamp_min(0)
+    with torch.inference_mode():
+        output = model(input_ids=encoded.input_ids, attention_mask=mask,
+                       position_ids=positions, use_cache=True)
+        for step in range(config['max_new_tokens']):
+            logits = output.logits[:, -1].float()
+            probabilities = logits.softmax(-1)
+            effective = torch.special.entr(probabilities).sum(-1).exp().tolist()
+            eos_probabilities = probabilities[:, query].tolist()
+            next_ids = []
+            for i in range(len(jobs)):
+                if stopped[i]:
+                    next_ids.append(tokenizer.pad_token_id)
+                    continue
+                scaled = probabilities[i] if config['temperature'] == 1.0 else (logits[i]/config['temperature']).softmax(-1)
+                distribution, indices, size = nucleus(scaled, config['top_p'])
+                token = int(indices[torch.multinomial(distribution, 1, generator=generators[i])].item())
+                next_ids.append(token)
+                ids[i].append(token)
+                steps[i].append({'p_selected': float(probabilities[i, token]),
+                                 'k_eff': effective[i], 'p_eos': eos_probabilities[i],
+                                 'nucleus_size': size})
+                stopped[i] = token in eos
+            if all(stopped) or step+1 == config['max_new_tokens']:
+                break
+            new_mask = mask.new_tensor([[0 if done else 1] for done in stopped])
+            mask = torch.cat((mask, new_mask), dim=-1)
+            positions = (mask.sum(-1, keepdim=True)-1).clamp_min(0)
+            output = model(input_ids=encoded.input_ids.new_tensor(next_ids).unsqueeze(-1),
+                           attention_mask=mask, position_ids=positions,
+                           past_key_values=output.past_key_values, use_cache=True)
+    return [{'token_ids': tokens, 'steps': stats, 'stopped': ended,
+             'text': tokenizer.decode(tokens, skip_special_tokens=True),
+             'metrics': summarize(tokens, stats, config['max_new_tokens'], ended)}
+            for tokens, stats, ended in zip(ids, steps, stopped)]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--model', required=True)
@@ -99,7 +163,10 @@ def main():
     ap.add_argument('--device', required=True, help='Explicit device, e.g. cuda:0')
     ap.add_argument('--format', choices=['raw','chat'], required=True)
     ap.add_argument('--seed', type=int, required=True)
+    ap.add_argument('--batch-size', type=int, default=1)
     args = ap.parse_args()
+    if args.batch_size < 1:
+        ap.error('batch-size must be positive')
     config = json.loads(Path(args.config).read_text())
     if set(config) - {'do_sample', 'temperature', 'top_p', 'top_k', 'max_new_tokens', 'repeats'}:
         ap.error('Unknown sampling configuration keys')
@@ -131,15 +198,24 @@ def main():
                 'seed_rule':'seed + row_index * repeats + repeat_index',
                 'source_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('*.py')}}
     (out/'manifest.json').write_text(json.dumps(manifest,indent=2))
+    jobs = [{'id': row['id'], 'repeat': repeat,
+             'seed': args.seed + index*config['repeats'] + repeat,
+             'text': row[args.condition]}
+            for index, row in enumerate(data) for repeat in range(config['repeats'])]
     totals = []
     with (out/'generations.jsonl').open('x') as f:
-        for index, row in enumerate(data):
-            for repeat in range(config['repeats']):
-                seed = args.seed + index*config['repeats'] + repeat
-                result = generate(model, tokenizer, row[args.condition], config, seed, args.format, args.device)
-                result.update(id=row['id'], repeat=repeat, seed=seed)
-                f.write(json.dumps(result,ensure_ascii=False)+'\n'); f.flush()
+        for start in range(0, len(jobs), args.batch_size):
+            batch = jobs[start:start+args.batch_size]
+            if args.batch_size == 1:
+                job = batch[0]
+                results = [generate(model, tokenizer, job['text'], config, job['seed'], args.format, args.device)]
+            else:
+                results = generate_batch(model, tokenizer, batch, config, args.format, args.device)
+            for job, result in zip(batch, results):
+                result.update(id=job['id'], repeat=job['repeat'], seed=job['seed'])
+                f.write(json.dumps(result, ensure_ascii=False)+'\n'); f.flush()
                 totals.append(result['metrics'])
+            print(f"Completed {len(totals)}/{len(jobs)} generations", flush=True)
     summary = {k:sum(r[k] for r in totals)/len(totals) for k in ('rdr','q99','k_eff_late','p_eos_late','nucleus_size_late')}
     summary.update(valid_generations=len(totals), prompts=len(data), rdr_percent=100*summary['rdr'])
     (out/'summary.json').write_text(json.dumps(summary,indent=2))
