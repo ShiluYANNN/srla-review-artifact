@@ -1,0 +1,8 @@
+{
+  "do_sample": true,
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "top_k": 0,
+  "max_new_tokens": 4096,
+  "repeats": 3
+}
