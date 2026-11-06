@@ -10,3 +10,4 @@
 !src/
 !src/evaluate.py
 !src/metrics.py
+!src/build_seeds.py
