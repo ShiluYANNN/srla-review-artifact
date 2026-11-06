@@ -1,0 +1,12 @@
+*
+!.gitignore
+!README.md
+!requirements.txt
+!SHA256.json
+!configs/
+!configs/evaluation.json
+!data/
+!data/prompts.jsonl
+!src/
+!src/evaluate.py
+!src/metrics.py

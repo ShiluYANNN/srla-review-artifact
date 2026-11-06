@@ -1,4 +1,3 @@
-"""Evaluate paired prompts with explicit sampling and native token statistics."""
 import argparse
 import hashlib
 import importlib.metadata
@@ -31,7 +30,7 @@ def render(tokenizer, text, style):
 
 
 def nucleus(probs, top_p):
-    """Keep the smallest prefix reaching top_p, including its crossing token."""
+
     import torch
     if top_p == 1.0:
         return probs, torch.arange(probs.numel(), device=probs.device), probs.numel()
@@ -91,7 +90,7 @@ def generate(model, tokenizer, text, config, seed, style, device):
 
 
 def generate_batch(model, tokenizer, jobs, config, style, device):
-    """Left-padded inference with an independent sampling RNG for each generation."""
+
     import torch
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token

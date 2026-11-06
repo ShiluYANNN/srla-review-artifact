@@ -1,4 +1,3 @@
-"""Generation metrics; probabilities refer to the unmodified model distribution."""
 from collections import Counter
 import math
 
