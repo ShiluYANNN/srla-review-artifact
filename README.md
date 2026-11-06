@@ -1,7 +1,3 @@
 # SRLA
 
-```bash
-pip install -r requirements.txt
-python src/evaluate.py --model /path/to/checkpoint --condition srla --format chat --device cuda:0 --seed 42 --output ../srla_outputs/evaluation
-python src/build_seeds.py --model /path/to/Qwen2.5-7B --device cuda:0 --seed 42 --ngram-size 6 --min-repeats 4 --output ../srla_outputs/prompts.jsonl
-```
+Seed construction and evaluation functions take tokenized model inputs. Paired prompts are in `data/prompts.jsonl`.

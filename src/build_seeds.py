@@ -1,10 +1,3 @@
-import argparse
-import json
-from pathlib import Path
-
-from evaluate import render
-
-
 def repeated_span(token_ids, ngram_size, min_repeats):
     if len(token_ids) < ngram_size:
         return None
@@ -16,7 +9,7 @@ def repeated_span(token_ids, ngram_size, min_repeats):
     return token_ids[positions[0]:]
 
 
-def construct_seed(model, tokenizer, text, seed, style, device, ngram_size, min_repeats):
+def construct_seed(model, tokenizer, encoded, seed, device, ngram_size, min_repeats):
     import torch
 
     eos = set()
@@ -28,8 +21,6 @@ def construct_seed(model, tokenizer, text, seed, style, device, ngram_size, min_
             eos.update(value)
     if not eos:
         raise ValueError('An EOS token is required')
-    encoded = tokenizer(render(tokenizer, text, style), return_tensors='pt',
-                        add_special_tokens=False).to(device)
     if encoded.input_ids.shape[1] == 0:
         raise ValueError('Empty input')
     context = getattr(model.config, 'max_position_embeddings', None)
@@ -56,47 +47,3 @@ def construct_seed(model, tokenizer, text, seed, style, device, ngram_size, min_
                            attention_mask=mask, past_key_values=output.past_key_values,
                            use_cache=True)
     return None
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model', default='Qwen/Qwen2.5-7B')
-    parser.add_argument('--data', default='data/prompts.jsonl')
-    parser.add_argument('--output', required=True)
-    parser.add_argument('--device', required=True)
-    parser.add_argument('--format', choices=['raw', 'chat'], default='raw')
-    parser.add_argument('--seed', type=int, required=True)
-    parser.add_argument('--ngram-size', type=int, required=True)
-    parser.add_argument('--min-repeats', type=int, required=True)
-    args = parser.parse_args()
-    if args.ngram_size < 1 or args.min_repeats < 2:
-        parser.error('Invalid repetition rule')
-    rows = [json.loads(line) for line in Path(args.data).read_text().splitlines() if line.strip()]
-    if not rows or len({row['id'] for row in rows}) != len(rows):
-        parser.error('Input IDs must be unique and nonempty')
-    if any(not isinstance(row.get('base'), str) or not row['base'].strip() for row in rows):
-        parser.error('Every input requires a nonempty base')
-    output_path = Path(args.output)
-    if output_path.exists():
-        parser.error('Use a new output file')
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float32 if args.device == 'cpu' else torch.float16
-    ).to(args.device).eval()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open('x', encoding='utf-8') as output:
-        for index, row in enumerate(rows):
-            suffix = construct_seed(model, tokenizer, row['base'], args.seed + index,
-                                    args.format, args.device, args.ngram_size, args.min_repeats)
-            if suffix is not None:
-                result = {'id': row['id'], 'language': row['language'],
-                          'base': row['base'], 'srla': row['base'] + '\n\n' + suffix}
-                output.write(json.dumps(result, ensure_ascii=False) + '\n')
-                output.flush()
-
-
-if __name__ == '__main__':
-    main()

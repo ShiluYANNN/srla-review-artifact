@@ -1,32 +1,4 @@
-import argparse
-import hashlib
-import importlib.metadata
-import json
-from pathlib import Path
-import platform
-import math
-import re
-import sys
-from metrics import summarize
-
-
-def render(tokenizer, text, style):
-    if style == 'raw':
-        return text
-    messages = []
-    for line in text.strip().splitlines():
-        match = re.match(r'^(Human|Assistant):\s*(.*)', line)
-        if match:
-            messages.append({'role': 'user' if match[1] == 'Human' else 'assistant', 'content': match[2]})
-        elif messages:
-            messages[-1]['content'] += '\n' + line
-        else:
-            messages.append({'role': 'user', 'content': line})
-    if not messages or not tokenizer.chat_template:
-        raise ValueError('Chat mode requires a nonempty prompt and an official chat template')
-    continuing = messages[-1]['role'] == 'assistant'
-    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=not continuing,
-                                        continue_final_message=continuing)
+from .metrics import summarize
 
 
 def nucleus(probs, top_p):
@@ -41,12 +13,11 @@ def nucleus(probs, top_p):
     return weights / weights.sum(), indices, int(keep.sum())
 
 
-def generate(model, tokenizer, text, config, seed, style, device):
+def generate(model, tokenizer, encoded, config, seed, device):
     import torch
     torch.manual_seed(seed)
     if device.startswith('cuda'):
         torch.cuda.manual_seed_all(seed)
-    encoded = tokenizer(render(tokenizer, text, style), return_tensors='pt', add_special_tokens=False).to(device)
     if encoded.input_ids.shape[1] == 0:
         raise ValueError('Empty tokenized prompt')
     eos = set()
@@ -89,14 +60,13 @@ def generate(model, tokenizer, text, config, seed, style, device):
 
 
 
-def generate_batch(model, tokenizer, jobs, config, style, device):
+def generate_batch(model, tokenizer, encoded, seeds, config, device):
 
     import torch
+    if len(seeds) != encoded.input_ids.shape[0]:
+        raise ValueError('Each batch row requires a sampling seed')
     if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = 'left'
-    texts = [render(tokenizer, job['text'], style) for job in jobs]
-    encoded = tokenizer(texts, padding=True, return_tensors='pt', add_special_tokens=False).to(device)
+        raise ValueError('A padding token is required')
     mask = encoded.attention_mask
     if (mask.sum(-1) == 0).any():
         raise ValueError('Empty tokenized prompt')
@@ -111,10 +81,10 @@ def generate_batch(model, tokenizer, jobs, config, style, device):
     query = tokenizer.eos_token_id
     if not eos or not isinstance(query, int):
         raise ValueError('EOS configuration is required')
-    generators = [torch.Generator(device=device).manual_seed(j['seed']) for j in jobs]
-    ids = [[] for _ in jobs]
-    steps = [[] for _ in jobs]
-    stopped = [False] * len(jobs)
+    generators = [torch.Generator(device=device).manual_seed(seed) for seed in seeds]
+    ids = [[] for _ in seeds]
+    steps = [[] for _ in seeds]
+    stopped = [False] * len(seeds)
     positions = (mask.cumsum(-1)-1).clamp_min(0)
     with torch.inference_mode():
         output = model(input_ids=encoded.input_ids, attention_mask=mask,
@@ -125,7 +95,7 @@ def generate_batch(model, tokenizer, jobs, config, style, device):
             effective = torch.special.entr(probabilities).sum(-1).exp().tolist()
             eos_probabilities = probabilities[:, query].tolist()
             next_ids = []
-            for i in range(len(jobs)):
+            for i in range(len(seeds)):
                 if stopped[i]:
                     next_ids.append(tokenizer.pad_token_id)
                     continue
@@ -150,75 +120,3 @@ def generate_batch(model, tokenizer, jobs, config, style, device):
              'text': tokenizer.decode(tokens, skip_special_tokens=True),
              'metrics': summarize(tokens, stats, config['max_new_tokens'], ended)}
             for tokens, stats, ended in zip(ids, steps, stopped)]
-
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--model', required=True)
-    ap.add_argument('--data', default='data/prompts.jsonl')
-    ap.add_argument('--condition', choices=['base','srla'], required=True)
-    ap.add_argument('--config', default='configs/evaluation.json')
-    ap.add_argument('--output', required=True)
-    ap.add_argument('--device', required=True, help='Explicit device, e.g. cuda:0')
-    ap.add_argument('--format', choices=['raw','chat'], required=True)
-    ap.add_argument('--seed', type=int, required=True)
-    ap.add_argument('--batch-size', type=int, default=1)
-    args = ap.parse_args()
-    if args.batch_size < 1:
-        ap.error('batch-size must be positive')
-    config = json.loads(Path(args.config).read_text())
-    if set(config) - {'do_sample', 'temperature', 'top_p', 'top_k', 'max_new_tokens', 'repeats'}:
-        ap.error('Unknown sampling configuration keys')
-    if config.get('do_sample', True) is not True:
-        ap.error('This evaluation requires random sampling')
-    if config.get('top_k', 0) != 0:
-        ap.error('This protocol uses top-p sampling without top-k; top_k must be 0')
-    if not math.isfinite(config['temperature']) or not math.isfinite(config['top_p']) or not 0 < config['top_p'] <= 1 or config['temperature'] <= 0 or any(
-            type(config[k]) is not int or config[k] < 1 for k in ('max_new_tokens','repeats')):
-        ap.error('Invalid sampling configuration')
-    data = [json.loads(s) for s in Path(args.data).read_text().splitlines() if s.strip()]
-    if not data or len({row['id'] for row in data}) != len(data):
-        ap.error('Dataset must be nonempty with unique record IDs')
-    if any(not isinstance(row.get(args.condition), str) or not row[args.condition].strip() for row in data):
-        ap.error('Selected condition must contain nonempty prompt text for every record')
-    out = Path(args.output)
-    if out.exists():
-        ap.error('Use a new output directory')
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32 if args.device=='cpu' else torch.float16).to(args.device).eval()
-    out.mkdir(parents=True)
-    manifest = {'arguments': vars(args), 'config': config, 'python': platform.python_version(),
-                'versions': {k:importlib.metadata.version(k) for k in ('torch','transformers')},
-                'dataset_sha256': hashlib.sha256(Path(args.data).read_bytes()).hexdigest(),
-                'expected_records': len(data)*config['repeats'],
-                'checkpoint_commit': getattr(model.config, '_commit_hash', None),
-                'seed_rule':'seed + row_index * repeats + repeat_index',
-                'source_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('*.py')}}
-    (out/'manifest.json').write_text(json.dumps(manifest,indent=2))
-    jobs = [{'id': row['id'], 'repeat': repeat,
-             'seed': args.seed + index*config['repeats'] + repeat,
-             'text': row[args.condition]}
-            for index, row in enumerate(data) for repeat in range(config['repeats'])]
-    totals = []
-    with (out/'generations.jsonl').open('x') as f:
-        for start in range(0, len(jobs), args.batch_size):
-            batch = jobs[start:start+args.batch_size]
-            if args.batch_size == 1:
-                job = batch[0]
-                results = [generate(model, tokenizer, job['text'], config, job['seed'], args.format, args.device)]
-            else:
-                results = generate_batch(model, tokenizer, batch, config, args.format, args.device)
-            for job, result in zip(batch, results):
-                result.update(id=job['id'], repeat=job['repeat'], seed=job['seed'])
-                f.write(json.dumps(result, ensure_ascii=False)+'\n'); f.flush()
-                totals.append(result['metrics'])
-            print(f"Completed {len(totals)}/{len(jobs)} generations", flush=True)
-    summary = {k:sum(r[k] for r in totals)/len(totals) for k in ('rdr','q99','k_eff_late','p_eos_late','nucleus_size_late')}
-    summary.update(valid_generations=len(totals), prompts=len(data), rdr_percent=100*summary['rdr'])
-    (out/'summary.json').write_text(json.dumps(summary,indent=2))
-
-
-if __name__ == '__main__':
-    main()
