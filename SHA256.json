@@ -1,11 +1,14 @@
 {
   ".gitignore": "7e78796a969be5c6219c49afed67ad1223b800fc3a3154514a50498e869b73b2",
-  "README.md": "5bd5be0fb6eb676ba2ba4c69acbabc85659c8574fbffbff7631407d91b23dd63",
+  "README.md": "2a731fa0793eebfdb2f2446a79e6407962bbc4c7562f4ce9bbd268d35cd936a4",
   "configs/evaluation.json": "c8a4de8cd4697a63cd0e2d2bf80f4486bc8a86c4ac0449c51e169ea3b545aa46",
   "data/prompts.jsonl": "3b1716b17cd161bf51af94340790b754c54897d376d78c3879bd68752d2228f1",
   "requirements.txt": "2f8fe88ed0adf603fe576dc9e76a156a05fc68adfd3387fd3fea9855c722b1e9",
   "src/evaluate.py": "dfcc06df890fd9b1f4c7184b2d7bbacd86f400f65b8198aded64488fa29393d9",
   "src/metrics.py": "a5ac67efd1f908fb2ba6c7ebf6a01eb603d05986fb3ead6c8c00ac6e556bc845",
   "src/build_seeds.py": "ef703077ddcb4de18e39f930acc6829804f0f78edbaff0791c3084381023dffc",
-  "src/inputs.py": "db970a9148a71d04f7c1e7088f05a102c389816dc6ae8046ac665b16a3ac9476"
+  "src/inputs.py": "db970a9148a71d04f7c1e7088f05a102c389816dc6ae8046ac665b16a3ac9476",
+  "data/tail142/generations.jsonl": "039b16803854249b05f6b71ff7a2adf3e5a4607df4b7e82695b8929ad4779599",
+  "data/tail142/README.md": "824673be6957e43811f2c7aa4b40214a1a22bb219897ce635507137906cb89c5",
+  "data/tail142/questions.jsonl": "3601aff00b454e9cd854495291f8c071f285d0fac58f7f78847bf7d81c4302fc"
 }
