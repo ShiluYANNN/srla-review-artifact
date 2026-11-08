@@ -6,7 +6,8 @@
 !configs/
 !configs/evaluation.json
 !data/
-!data/prompts.jsonl
+!data/SRLA_built.jsonl
+!data/tail.jsonl
 !src/
 !src/evaluate.py
 !src/metrics.py
